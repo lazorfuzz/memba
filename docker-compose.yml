@@ -1,0 +1,41 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: memba
+      POSTGRES_PASSWORD: memba
+      POSTGRES_DB: memba
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memba"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: memba
+      MINIO_ROOT_PASSWORD: memba-dev-secret
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [miniodata:/data]
+
+  memd:
+    build: .
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      MEMD_PG_DSN: postgres://memba:memba@postgres:5432/memba?sslmode=disable
+      MEMD_TOKEN_SECRET: dev-secret-change-me
+      MEMD_S3_ENDPOINT: http://minio:9000
+    ports: ["8080:8080"]
+    command: ["/bin/sh", "-c", "/usr/local/bin/memd --migrate && exec /usr/local/bin/memd --role all"]
+    volumes:
+      - memddata:/app/data
+
+volumes:
+  pgdata: {}
+  miniodata: {}
+  memddata: {}

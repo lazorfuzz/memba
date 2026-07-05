@@ -1,0 +1,40 @@
+# configs/memd.yaml — shipping defaults (spec §4.4).
+# Every query logs config_hash = sha256(effective retrieval+model config) (I5).
+
+server:   { http_addr: ":8080", max_body_mb: 32 }
+postgres: { dsn_env: MEMD_PG_DSN, max_conns: 32 }
+objstore: { backend: fs, dir: ./data/objstore, endpoint_env: MEMD_S3_ENDPOINT, bucket: memba }
+
+models:
+  # Local providers run with zero external services; switch embedder to
+  # provider: voyage / model: voyage-code-3 (VOYAGE_API_KEY) for production.
+  embedder:   { provider: local, model: hash-embedder-v1, dim: 1024, output: halfvec }
+  reranker:   { provider: local, model: lexical-overlap-v1, max_pairs: 100 }
+  extractor:  { provider: anthropic, model: claude-sonnet-latest }   # ingest-time card extraction
+  judge:      { provider: anthropic, model: claude-sonnet-latest }   # benchmark grading only
+
+retrieval:
+  per_retriever_n: 50        # candidates from each retriever before fusion
+  rrf_k: 60
+  fused_pool: 150
+  rerank_top: 100
+  budgets: { boot: 700, scoped: 4000, deep: 12000, workspace_files: 64000 }
+
+lifecycle:
+  ttl_days: { code: 28, operational: 90, design: 180 }   # verify_by clocks (§10.7)
+  dormant_after_ttl_multiple: 2
+  dedup_cosine: 0.92
+
+promotion:                      # §10.6
+  min_sources_for_multi_source_rule: 2
+  chat_only_can_promote: false
+
+security:
+  injection_scan: { enabled: true, action: quarantine }
+  secret_scan:    { ruleset: gitleaks-default, entropy_threshold: 4.5 }
+  workspace_ttl_hours: 72
+  token_secret_env: MEMD_TOKEN_SECRET
+
+verify:
+  repo_root: ./data/repos      # local clones for branch verification (§9.4)
+  workers: 8
