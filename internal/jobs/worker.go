@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/lazorfuzz/memba/internal/cards"
+	"github.com/lazorfuzz/memba/internal/consolidate"
+	"github.com/lazorfuzz/memba/internal/extract"
 	"github.com/lazorfuzz/memba/internal/store"
 	"github.com/lazorfuzz/memba/internal/verify"
 	"github.com/lazorfuzz/memba/internal/workspace"
@@ -17,16 +19,17 @@ import (
 
 // Worker consumes jobs and runs periodic sweeps.
 type Worker struct {
-	Store     store.Store
-	Cards     *cards.Service
-	Verifier  *verify.Verifier
-	Workspace *workspace.Writer
-	Log       *slog.Logger
-	// SweepEvery is the cadence for self-scheduling verify/decay/gc sweeps
-	// (nightly in production; short in dev/benchmarks).
+	Store        store.Store
+	Cards        *cards.Service
+	Verifier     *verify.Verifier
+	Workspace    *workspace.Writer
+	Extractor    *extract.Extractor        // nil-safe: skips when no LLM configured
+	Consolidator *consolidate.Consolidator // runs consolidate_ns (C1–C7)
+	Log          *slog.Logger
+	// SweepEvery is the cadence for self-scheduling verify/decay/gc sweeps and
+	// consolidation (nightly in production; short in dev/benchmarks).
 	SweepEvery time.Duration
-	// Tenants to sweep. Sweeps run per-tenant; the API layer enqueues
-	// tenant-scoped jobs, this list covers cron self-scheduling.
+	// Tenants to sweep; empty = discover from the namespaces table.
 	Tenants []string
 }
 
@@ -69,12 +72,24 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 func (w *Worker) scheduleSweeps(ctx context.Context) {
-	for _, t := range w.Tenants {
+	tenants := w.Tenants
+	if len(tenants) == 0 {
+		if discovered, err := w.Store.ListTenants(ctx); err == nil {
+			tenants = discovered
+		}
+	}
+	for _, t := range tenants {
 		_ = w.Store.EnqueueJob(ctx, t, "verify_sweep", map[string]any{})
 		_ = w.Store.EnqueueJob(ctx, t, "decay_sweep", map[string]any{})
+		// Sleep-time consolidation per namespace (spec §11).
+		if namespaces, err := w.Store.ListNamespaces(ctx, t); err == nil {
+			for _, ns := range namespaces {
+				_ = w.Store.EnqueueJob(ctx, t, "consolidate_ns", map[string]any{"namespace_id": ns.ID})
+			}
+		}
 	}
-	if len(w.Tenants) > 0 {
-		_ = w.Store.EnqueueJob(ctx, w.Tenants[0], "workspace_gc", map[string]any{})
+	if len(tenants) > 0 {
+		_ = w.Store.EnqueueJob(ctx, tenants[0], "workspace_gc", map[string]any{})
 	}
 }
 
@@ -100,15 +115,40 @@ func (w *Worker) handle(ctx context.Context, job *store.Job) {
 			w.Log.Info("workspace_gc", "deleted", n)
 		}
 	case "extract_cards":
-		// LLM extraction (§10.4) requires a configured extractor provider;
-		// without one the job is a recorded no-op so the queue drains.
-		var payload map[string]any
+		var payload struct {
+			RawID string `json:"raw_id"`
+		}
 		_ = json.Unmarshal(job.Payload, &payload)
-		w.Log.Debug("extract_cards skipped: no extractor provider configured", "payload", payload)
+		if w.Extractor == nil || w.Extractor.LLM == nil {
+			w.Log.Debug("extract_cards skipped: no extractor provider configured", "raw_id", payload.RawID)
+			break
+		}
+		var res extract.Result
+		res, err = w.Extractor.ExtractFromEvidence(ctx, job.TenantID, payload.RawID)
+		if err == nil {
+			w.Log.Info("extract_cards", "tenant", job.TenantID, "raw_id", payload.RawID,
+				"candidates", res.Candidates, "cards", res.CardsProposed, "promoted", res.CardsPromoted,
+				"facts", res.FactsProposed, "discarded_no_quote", res.DiscardedNoQuote, "skipped", res.SkippedReason)
+		}
+	case "consolidate_ns":
+		var payload struct {
+			NamespaceID string `json:"namespace_id"`
+		}
+		_ = json.Unmarshal(job.Payload, &payload)
+		if w.Consolidator == nil || payload.NamespaceID == "" {
+			break
+		}
+		var stats consolidate.Stats
+		stats, err = w.Consolidator.Run(ctx, job.TenantID, payload.NamespaceID)
+		w.Log.Info("consolidate_ns", "tenant", job.TenantID, "namespace", payload.NamespaceID,
+			"merged", stats.C1MergedProposals, "profile_updated", stats.C2ProfileUpdated,
+			"conflicts", stats.C3Conflicts, "links", stats.C4LinksProposed,
+			"gaps", stats.C5Gaps, "failure_gotchas", stats.C6GotchaProposals,
+			"verified", stats.C7Verified, "dormant", stats.C7Dormant)
 	case "ingest_chunk", "embed":
 		// Chunk+embed run inline at ingest in this build (read-your-writes
 		// for benchmarks, I5); these kinds exist for async migration.
-	case "consolidate_ns", "recompute_acl", "reembed_model_migration":
+	case "recompute_acl", "reembed_model_migration":
 		w.Log.Debug("job kind not yet implemented; recorded as no-op", "kind", job.Kind)
 	}
 	if err != nil {

@@ -1,0 +1,58 @@
+[
+  {
+    "question_id": "lme_sample_001",
+    "question_type": "single-session-user",
+    "question": "What breed is the user's dog?",
+    "answer": "corgi",
+    "question_date": "2023/06/01 (Thu) 10:00",
+    "haystack_dates": ["2023/05/20 (Sat) 02:21", "2023/05/22 (Mon) 18:04"],
+    "haystack_session_ids": ["sess_a", "sess_b"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I just adopted a corgi named Biscuit and I'm trying to crate train him."},
+        {"role": "assistant", "content": "Congratulations on adopting Biscuit! Crate training a corgi usually takes a few weeks..."}
+      ],
+      [
+        {"role": "user", "content": "What's a good beginner sourdough recipe?"},
+        {"role": "assistant", "content": "A simple 1:2:3 sourdough uses one part starter, two parts water, three parts flour..."}
+      ]
+    ],
+    "answer_session_ids": ["sess_a"]
+  },
+  {
+    "question_id": "lme_sample_002",
+    "question_type": "knowledge-update",
+    "question": "Which city does the user live in now?",
+    "answer": "Lisbon",
+    "question_date": "2023/07/15 (Sat) 09:30",
+    "haystack_dates": ["2023/04/02 (Sun) 11:15", "2023/07/01 (Sat) 20:45"],
+    "haystack_session_ids": ["sess_c", "sess_d"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I live in Berlin and I'm looking for coworking spaces near Kreuzberg."},
+        {"role": "assistant", "content": "Kreuzberg has several good coworking options..."}
+      ],
+      [
+        {"role": "user", "content": "We finished the move! I live in Lisbon now, any tips for registering as a freelancer here?"},
+        {"role": "assistant", "content": "Welcome to Lisbon! For freelancer registration you'll want to get a NIF first..."}
+      ]
+    ],
+    "answer_session_ids": ["sess_d"]
+  },
+  {
+    "question_id": "lme_sample_003_abs",
+    "question_type": "single-session-user",
+    "question": "What is the name of the user's sister?",
+    "answer": "N/A",
+    "question_date": "2023/07/20 (Thu) 14:00",
+    "haystack_dates": ["2023/05/20 (Sat) 02:21"],
+    "haystack_session_ids": ["sess_e"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Planning a weekend hike near Boulder, any trail suggestions under 10 miles?"},
+        {"role": "assistant", "content": "The Royal Arch trail is a classic Boulder hike at about 3.4 miles round trip..."}
+      ]
+    ],
+    "answer_session_ids": []
+  }
+]

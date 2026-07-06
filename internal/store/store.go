@@ -78,6 +78,18 @@ type Job struct {
 	MaxAttempts int
 }
 
+// CardPair is a near-duplicate or co-cited card pair (consolidation C1/C4).
+type CardPair struct {
+	A, B  memory.Card
+	Score float64 // cosine similarity (C1) or shared-source count (C4)
+}
+
+// GapQuery is a clustered low-answerability query (consolidation C5).
+type GapQuery struct {
+	Query string
+	Count int
+}
+
 // CardFilter selects cards for listing.
 type CardFilter struct {
 	NamespaceID string
@@ -160,4 +172,19 @@ type Store interface {
 	DequeueJob(ctx context.Context, kinds []string) (*Job, error)
 	CompleteJob(ctx context.Context, id int64) error
 	FailJob(ctx context.Context, id int64, errMsg string) error
+
+	// Discovery (cron scheduling)
+	ListTenants(ctx context.Context) ([]string, error)
+	ListNamespaces(ctx context.Context, tenantID string) ([]memory.Namespace, error)
+
+	// Extraction support (§10.4 caps)
+	CountCardsCreatedSince(ctx context.Context, tenantID, namespaceID, createdFrom string, since time.Time) (int, error)
+
+	// Consolidation support (§11)
+	NearDuplicateCardPairs(ctx context.Context, tenantID, namespaceID string, minCosine float64, limit int) ([]CardPair, error)
+	CardHasSuperseder(ctx context.Context, cardID string) (bool, error)
+	CoCitedCardPairs(ctx context.Context, tenantID, namespaceID string, minShared, limit int) ([]CardPair, error)
+	LowAnswerabilityQueries(ctx context.Context, tenantID, namespaceID string, since time.Time, limit int) ([]GapQuery, error)
+	FailedRunEvidence(ctx context.Context, tenantID, namespaceID string, since time.Time, limit int) ([]memory.RawEvidence, error)
+	InsertConsolidationRun(ctx context.Context, tenantID, namespaceID string, stats map[string]any, runErr string) error
 }

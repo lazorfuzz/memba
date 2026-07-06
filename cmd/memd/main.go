@@ -17,7 +17,9 @@ import (
 
 	"github.com/lazorfuzz/memba/internal/api"
 	"github.com/lazorfuzz/memba/internal/config"
+	"github.com/lazorfuzz/memba/internal/consolidate"
 	"github.com/lazorfuzz/memba/internal/embed"
+	"github.com/lazorfuzz/memba/internal/extract"
 	"github.com/lazorfuzz/memba/internal/jobs"
 	"github.com/lazorfuzz/memba/internal/rerank"
 	"github.com/lazorfuzz/memba/internal/store/postgres"
@@ -88,10 +90,37 @@ func main() {
 	log.Info("memba", "config_hash", svc.Hash, "embedder", emb.ModelID())
 
 	if *role == "worker" || *role == "all" {
+		verifier := &verify.Verifier{Store: st, Embedder: emb, RepoRoot: cfg.Verify.RepoRoot}
+
+		// LLM extractor (§10.4): enabled only when the configured provider has
+		// credentials; otherwise extract_cards jobs drain as recorded no-ops.
+		llm, err := extract.NewLLM(cfg.Models.Extractor)
+		if err != nil {
+			log.Error("extractor", "err", err)
+			os.Exit(1)
+		}
+		var extractor *extract.Extractor
+		if llm != nil {
+			system, user := extract.LoadPrompts("configs/prompts")
+			extractor = &extract.Extractor{
+				Store: st, Cards: svc.Cards, LLM: llm,
+				SystemPrompt: system, UserPrompt: user,
+				MaxCandidates: 8, DailyCap: 200,
+			}
+			log.Info("extractor enabled", "model", llm.ModelID())
+		} else {
+			log.Info("extractor disabled (no provider credentials); extract_cards jobs will no-op")
+		}
+
 		w := &jobs.Worker{
 			Store: st, Cards: svc.Cards,
-			Verifier:  &verify.Verifier{Store: st, Embedder: emb, RepoRoot: cfg.Verify.RepoRoot},
-			Workspace: ws, Log: log, SweepEvery: *sweepEvery,
+			Verifier:  verifier,
+			Workspace: ws,
+			Extractor: extractor,
+			Consolidator: &consolidate.Consolidator{
+				Store: st, Cards: svc.Cards, Blobs: blobs, Cfg: cfg, Checker: verifier,
+			},
+			Log: log, SweepEvery: *sweepEvery,
 			Tenants: splitNonEmpty(*tenants),
 		}
 		go w.Run(ctx)

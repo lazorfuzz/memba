@@ -185,6 +185,10 @@ func createdFrom(p memory.Principal) string {
 	switch {
 	case strings.HasPrefix(p.ID, "agent:"):
 		return memory.FromAgentRun
+	case p.ID == "svc:consolidation":
+		return memory.FromConsolidation
+	case p.ID == "svc:bootstrap":
+		return memory.FromBootstrap
 	case strings.HasPrefix(p.ID, "svc:"):
 		return memory.FromExtractor
 	default:
@@ -238,6 +242,22 @@ func (s *Service) EvaluatePromotion(ctx context.Context, tenantID, cardID string
 		ChatOnlyCanPromote: s.Cfg.Promotion.ChatOnlyCanPromote,
 		Now:                time.Now().UTC(),
 	}), nil
+}
+
+// PromoteIfEligible evaluates §10.6 and applies the promotion when a rule
+// fires. Used by callers that insert proposals directly (consolidation C1)
+// instead of going through Propose.
+func (s *Service) PromoteIfEligible(ctx context.Context, tenantID, cardID string) (PromotionDecision, error) {
+	d, err := s.EvaluatePromotion(ctx, tenantID, cardID)
+	if err != nil {
+		return d, err
+	}
+	if d.Promote {
+		if err := s.applyPromotion(ctx, tenantID, cardID, d); err != nil {
+			return d, err
+		}
+	}
+	return d, nil
 }
 
 func (s *Service) applyPromotion(ctx context.Context, tenantID, cardID string, d PromotionDecision) error {

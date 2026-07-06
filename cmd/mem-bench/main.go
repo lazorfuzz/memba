@@ -46,8 +46,14 @@ func main() {
 	mode := runCmd.String("mode", "", "override query mode (scoped|deep|workspace)")
 	verbose := runCmd.Bool("v", false, "log per-case results")
 
+	if len(os.Args) >= 2 && os.Args[1] == "longmemeval" {
+		cmdLongMemEval(os.Args[2:])
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "run" {
-		fmt.Fprintln(os.Stderr, "usage: mem-bench run --base URL --token TOK --cases FILE [--mode deep] [-v]")
+		fmt.Fprintln(os.Stderr, `usage:
+  mem-bench run         --base URL --token TOK --cases FILE [--mode deep] [-v]
+  mem-bench longmemeval --base URL --token TOK --file longmemeval_s.json [--limit N] [--mode deep] [-v]`)
 		os.Exit(2)
 	}
 	runCmd.Parse(os.Args[2:])

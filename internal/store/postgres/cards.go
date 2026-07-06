@@ -168,16 +168,27 @@ func (p *PG) ListCards(ctx context.Context, tenantID string, f store.CardFilter)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []memory.Card
 	for rows.Next() {
 		c, err := scanCard(rows)
 		if err != nil {
+			rows.Close()
 			return nil, err
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Citations ride along: the review queue (and consolidation) need them
+	// to judge a proposal (I2 — a card without citations is not reviewable).
+	for i := range out {
+		if srcs, err := p.CardSources(ctx, out[i].ID); err == nil {
+			out[i].Sources = srcs
+		}
+	}
+	return out, nil
 }
 
 func (p *PG) UpdateCardStatus(ctx context.Context, tenantID, id, status, reason string) error {
