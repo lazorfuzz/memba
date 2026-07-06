@@ -1,37 +1,88 @@
-# memba — Institutional Memory Kernel
+# memba
 
-memba is an institutional memory system for long-running AI coding agents. It
-ingests an organization's evidence (code, PRs, docs, chat, CI runs, incident
-reports, prior agent runs), distills it into **verified, citable memory**, and
-serves it back to agents as compact evidence packs or mounted file workspaces.
+**An institutional memory kernel for long-running AI coding agents.**
 
-This repository implements the v3 specification (`memba_v3_spec.md`), built in
-its phase order (§21). Current coverage: **Phase 0 complete, plus the
-deterministic core of Phases 1–4** — see *Status* below.
+memba ingests your organization's evidence — code, pull requests, docs, CI runs, incidents, chat, prior agent runs — distills it into *verified, citable memory*, and serves it back to agents as compact context blocks or mounted file workspaces they can `ls`, `grep`, and read.
 
-## Design invariants (spec §2)
+It is not RAG with a REST wrapper. It is a small, strict, verifiable evidence engine:
 
 ```text
-I1. Raw evidence is immutable and verbatim.
-I2. Every durable derived memory cites raw evidence.
-I3. Code memories are branch-verified before serving, or flagged stale.
-I4. Agents PROPOSE memory; only memd PROMOTES it (deterministic rules).
-I5. Benchmarks exercise the same public /v1 API as production.
-I6. Every active memory has a verification clock (verify_by).
-I7. Retrieved evidence is data, not instructions.
+institutional memory =
+    raw verbatim evidence            (immutable, always)
+  + validated, cited memory cards    (nothing uncited survives)
+  + bitemporal facts                 ("what did we believe on May 1?")
+  + branch-verified code claims      (checked against YOUR branch, just-in-time)
+  + navigable evidence workspaces    (agents read files, not prompts)
+  + recorded memory actions          (memory behavior is itself measurable)
 ```
 
-## Stack (spec §4.1)
+One Go binary. One Postgres. One object store. That's the whole footprint.
+
+---
+
+## Why
+
+Long-running coding agents fail in organizations for a predictable reason: the knowledge they need is scattered, stale, permissioned, and contradictory. A retrieval layer that treats this as "vector search over a database" produces confident answers built on outdated docs, chat rumors, and other agents' failed experiments.
+
+memba is built on three findings from the 2025–2026 memory literature:
+
+1. **Agentic file exploration beats one-shot retrieval** on hard, long-horizon memory tasks — so the mounted **workspace is the default interface**, pre-curated with verified cards instead of raw logs.
+2. **Unverified memory is worse than no memory.** Open-gate memory stores accumulate "hallucinations of the past" and are a demonstrated attack surface (MINJA, AgentPoison) — so *every* write is gated, every code claim is branch-verified, and every active memory sits on a decay clock.
+3. **Long context doesn't replace memory.** Million-token windows degrade on distractor-heavy input and carry no ACLs, no verification, no staleness flags — so memba treats long context and prompt caching as delivery mechanisms, not competitors.
+
+## What makes it different
+
+| | Typical RAG memory | memba |
+|---|---|---|
+| Writes | append-only, open gate | **propose → validate → promote** — deterministic rules (P1–P5), hard blockers (B1–B5); agents *cannot* write directly to active memory |
+| Code claims | served as-is | **branch-verified just-in-time**: file exists · quote still holds (exact → fuzzy → embedding) · symbol still defined (go/ast index) · commit is an ancestor |
+| Staleness | forever-fresh fiction | **verification clocks**: 28/90/180-day TTLs; expired memory degrades to `stale` (served *flagged*, never silently dropped), then `dormant` |
+| Citations | optional | **mandatory** (invariant I2): a memory without verbatim citations cannot leave `proposed` — extractor output that can't quote its source is discarded |
+| Contradictions | last-write-wins | **bitemporal facts** + deterministic conflict resolution (branch-verified > runtime-validated > source authority > recency), losers shown with the rule that decided |
+| Unanswerable questions | confident nonsense | **answerability scoring + `missing_evidence.md`** — the system says "institutional memory doesn't establish this" |
+| Poisoning | not modeled | injection scanning at ingest, quarantine, per-source diversity caps, compiled-only always-on layers, provenance-gated promotion (defenses D1–D7) |
+| Tenancy | a `WHERE` clause you hope holds | `tenant_id` on every table, every query; property-tested (10k-query fuzz, zero tolerance) |
+
+## The memory stack
 
 ```text
-One Go service        memd          API + ingest + retrieval + verification + jobs
-One database          PostgreSQL 16 + pgvector (halfvec HNSW) + pg_trgm
-One object store      fs backend (dev default) / S3-compatible behind an interface
-One workspace format  .memworkspace/  (tar.zst export)
-One public API        /v1
+L0  agent boot context      ≤ 700 tok   compiled rules of engagement; cache-stable
+L1  repo operating profile  ≤ 2k tok    a perfect CLAUDE.md — except every line cites
+                                        a card on a verification clock
+L2  scoped memory cards     on demand   "don't edit *_pb.go; edit the proto, run make proto"
+L3  deep hybrid retrieval   on demand   6 retrievers → RRF → rerank → deterministic gates
+L4  evidence workspace      DEFAULT     a .memworkspace/ file tree: gotchas.md,
+    for coding tasks                    procedures.md, facts.jsonl, labeled raw spans,
+                                        missing_evidence.md, writable scratch/
 ```
 
-## Quick start
+```text
+     Git · PRs · Docs · Slack · CI · Incidents · Agent runs
+                          │  connectors
+                          ▼
+┌───────────────────────── memd (one Go binary) ─────────────────────────┐
+│ ingest → raw evidence (immutable) → chunk/embed/index → extractor      │
+│                                          │        (LLM, citation-gated)│
+│                                          ▼                             │
+│                            PROPOSED cards & facts                      │
+│                                          │                             │
+│              promotion rules (P1–P5 / blockers B1–B5)                  │
+│                                          ▼                             │
+│ query → authz → R1–R6 retrievers → RRF → rerank → gates ──► evidence   │
+│         (FTS·trigram·vector·symbol·facts·links)  G1–G5      pack / L4  │
+│                                                                        │
+│ background: JIT verification · decay clocks · sleep-time consolidation │
+│             (dedup/merge · profile build · conflict sweep · link       │
+│              inference · gap mining · failure mining)                  │
+└────────────────────────────────────────────────────────────────────────┘
+                          │  mem.search / mem.workspace / mem.open /
+                          ▼  mem.log / mem.propose / mem.verify / mem.invalidate
+                 long-running coding agents
+```
+
+Seven agent tools, no more. Everything runs behind one `/v1` API — and the benchmark harness drives **the same API as production** (invariant I5; no benchmark-only paths).
+
+## Quickstart
 
 ```bash
 # 1. Postgres with pgvector
@@ -42,186 +93,190 @@ docker run -d --name memba-pg -p 5432:5432 \
 export MEMD_PG_DSN='postgres://memba:memba@localhost:5432/memba?sslmode=disable'
 export MEMD_TOKEN_SECRET='dev-secret-change-me'
 
-# 2. Migrate + run
+# 2. Migrate + run (dev defaults need zero external model services)
 go run ./cmd/memctl migrate
 go run ./cmd/memd --config configs/memd.yaml --role all
+```
 
-# 3. Mint a token, create a namespace, ingest, query
+Or `docker compose up --build` for the full Postgres + MinIO + memd stack.
+
+**Sixty-second tour** (second terminal):
+
+```bash
 TOK=$(go run ./cmd/memctl token --tenant acme --principal agent:coder-1 --subjects team:payments)
-go run ./cmd/memctl namespace --token "$TOK" --id /acme/payments/repos/billing-api --kind repo
+
+# ingest evidence
 curl -s -X POST localhost:8080/v1/evidence -H "Authorization: Bearer $TOK" \
   -H 'Content-Type: application/json' -d '{
     "namespace_id":"/acme/payments/repos/billing-api",
     "source_type":"doc","source_uri":"doc://billing-api/README.md",
-    "body":"Run `make test` before pushing."}'
+    "body":"Run `make test` before pushing. Never edit generated invoice_status.pb.go."}'
+
+# ask
 curl -s -X POST localhost:8080/v1/query -H "Authorization: Bearer $TOK" \
   -H 'Content-Type: application/json' -d '{
     "namespace_hints":["/acme/payments/repos/billing-api"],
-    "query":"what do I run before pushing?","mode":"scoped"}'
+    "query":"what do I run before pushing?","mode":"scoped"}' | jq .
+
+# propose a memory — two independent sources auto-promote it (rule P4);
+# a chat-only citation would be blocked (B2); zero citations is a 422 (B4)
+curl -s -X POST localhost:8080/v1/cards -H "Authorization: Bearer $TOK" \
+  -H 'Content-Type: application/json' -d '{
+    "namespace_id":"/acme/payments/repos/billing-api","card_type":"gotcha",
+    "title":"Never edit invoice_status.pb.go",
+    "body":"It is generated; edit the proto and run make proto.",
+    "subject":"billing-api",
+    "structured":{"trigger":"editing *_pb.go","severity":"high","consequence":"overwritten"},
+    "source_refs":[{"source_uri":"doc://billing-api/README.md"},
+                   {"source_uri":"git://billing-api/src/invoice/invoice_status.pb.go"}]}' | jq .
+
+# mount a workspace for a coding task (the default interface for agents)
+curl -s -X POST localhost:8080/v1/query -H "Authorization: Bearer $TOK" \
+  -H 'Content-Type: application/json' -d '{
+    "namespace_hints":["/acme/payments/repos/billing-api"],
+    "query":"add a new invoice status safely","goal_type":"coding_change",
+    "mode":"workspace"}' | jq '{workspace_uri, cards: [.cards[].title]}'
 ```
 
-Or `docker compose up --build` (Postgres + MinIO + memd).
+Open **`http://localhost:8080/ui`** for the memory-health dashboard and review queue.
 
-### Benchmark smoke (I5: drives the public API)
+### Watch verification catch a stale memory
+
+Point a card at real code (clones live under `verify.repo_root`, maintained by the git connector):
 
 ```bash
-BENCH_TOK=$(go run ./cmd/memctl token --tenant bench --principal svc:mem-bench)
-go run ./cmd/mem-bench run --token "$BENCH_TOK" --cases testdata/bench/smoke.jsonl -v
+curl -s -X POST localhost:8080/v1/verify -H "Authorization: Bearer $TOK" \
+  -H 'Content-Type: application/json' \
+  -d '{"target":"card:<id>","verification_type":"code_branch_check",
+       "repo":"billing-api","branch":"main"}' | jq .
 ```
 
-### LongMemEval adapter (spec §17.2)
+`passed` → the card's verification clock resets and proposals auto-promote (P3). Then someone refactors the cited code, and the same check returns:
 
-Download the LongMemEval v1 dataset (`longmemeval_s.json` / `_m` / oracle
-split) and run it through the public API. Scoring is memory-side **evidence
-recall** (gold answer surfaced in the pack) plus the abstention axis
-(`*_abs` instances credit `answerability: low` / `missing_evidence`),
-reported per question type — a pinned LLM reader for answer-level EM/F1
-plugs in on top of the archived packs (§17.1):
-
-```bash
-go run ./cmd/mem-bench longmemeval --token "$BENCH_TOK" \
-  --file longmemeval_s.json --limit 100 --mode deep -v
-# smoke fixture: testdata/bench/lme_sample.json
+```json
+{"result":"failed","per_ref":[{"check":"quote_holds","result":"failed","detail":"content_changed"}]}
 ```
 
-### LLM extractor (spec §10.4)
+The card degrades to `stale`, and deep queries serve it **flagged** — `"This memory may be stale: … quote_holds failed for git://billing-api/src/invoice/status.go [checked against branch main]"` — because a wrong-but-flagged memory teaches the agent what changed; a silently dropped one teaches nothing.
 
-`extract_cards` jobs run a citation-gated extractor over newly ingested
-evidence: candidates whose quotes are not found **verbatim** in the evidence
-body are discarded (I2), survivors enter the normal proposal → promotion
-gate, capped at 8 candidates/document and a per-namespace daily budget.
-Enable by exporting `ANTHROPIC_API_KEY` (config `models.extractor`,
-provider `anthropic`; `claude-sonnet-latest` resolves to `claude-sonnet-5`).
-Without credentials the worker records the jobs as no-ops. Prompts are
-versioned files in `configs/prompts/` (part of the §17.7 scaffold surface).
+## Connectors
 
-### Sleep-time consolidation (spec §11)
-
-The worker schedules `consolidate_ns` per namespace on the `--sweep-every`
-cadence (set it to ~24h in production). Jobs C1–C7: near-duplicate merge
-proposals with `supersedes` links (auto-promotable via P4), byte-stable L1
-profile generation served by `GET /v1/profile?level=1`, fact-contradiction
-sweeps, co-citation `related_to` link inference, gap mining from
-low-answerability queries (report under `reports/…/missing_knowledge.md` in
-the object store), failure mining (≥3 same-signature failed runs → gated
-gotcha proposal), and decay/dormancy. Every run writes a
-`consolidation_runs` stats row.
-
-### Branch verification (spec §9)
-
-Place (or let the git connector maintain) clones under `verify.repo_root`
-(default `./data/repos/<repo>`). Cards citing `git://<repo>/<path>` are then
-checkable: `POST /v1/verify {"target":"card:<id>","verification_type":
-"code_branch_check","repo":"<repo>","branch":"main"}`. Passing checks reset
-the card's `verify_by` clock and auto-promote proposals via rule P3; failing
-checks move cards to `stale`, and deep queries serve them **flagged, never
-silently dropped**.
-
-### Connectors (spec §14.4)
-
-All connectors normalize into `POST /v1/evidence` and are stateless beyond a
-cursor; re-runs are cheap thanks to ingest idempotency.
+All connectors normalize into `POST /v1/evidence`, are stateless beyond a cursor, and re-run for free thanks to content-hash idempotency:
 
 ```bash
-# git — maintains the clone under verify.repo_root (keeps branch
-# verification + the code index live) and ingests diff-driven increments
+# git — maintains blobless clones under verify.repo_root (keeps branch
+# verification and the code index live); diff-driven incremental ingest
 go run ./connectors/git --repo-url https://github.com/acme/x.git --repo x \
   --namespace /acme/repos/x --token $TOK --branch main --interval 60s
 
-# github — merged PRs (github_pr) + failed workflow runs (ci); GITHUB_TOKEN optional for public repos
+# github — merged PRs with review verdicts + failed CI runs (feeds failure mining)
 go run ./connectors/github --owner acme --repo x --namespace /acme/repos/x --token $TOK --interval 5m
 
-# slack — channel history batches (authority 7; injection/secret scans server-side); needs SLACK_TOKEN
+# slack — channel history (authority 7: chat can never self-promote)
 go run ./connectors/slack --channels C0PAY --namespace /acme/team/payments --token $TOK --interval 5m
 
-# localfile — directory trees (docs)
+# localfile — any directory of docs
 go run ./connectors/localfile --dir ./docs --namespace /acme/repos/x --token $TOK
 ```
 
-### Curation surface (spec §16)
+**Cold start (§20):** `POST /v1/admin/bootstrap {"repo":"x","namespace_id":"/acme/repos/x"}` ingests docs/build/CI files from the clone, seeds procedure cards from Makefile targets, and branch-verifies them immediately — code-backed seeds promote with zero human input.
 
-`GET /ui` serves the memory-health dashboard + review queue (paste an
-operator token). Data endpoints: `GET /v1/admin/health` (card freshness,
-verify-overdue, proposal queue depth, median time-to-promotion,
-low-answerability count) and `GET /v1/cards?status=proposed`.
+## While you sleep
 
-### Audit mode (spec §8.1, D7)
+Nightly per-namespace consolidation (every output re-enters the promotion gate — consolidation never silently rewrites active memory):
 
-`POST /v1/query` with `{"mode":"audit","query":"card:<id>"}` returns the full
-provenance chain: card/fact, citations with cited-evidence summaries,
-verification history, and review decisions.
+- **dedup/merge** — near-duplicate cards become one merged proposal citing the union of sources, with `supersedes` links
+- **profile build** — regenerates the L1 operating profile, byte-stable so prompt caches only bust on real change
+- **conflict sweep** — contradicting facts get flagged and queued for re-verification
+- **link inference** — `related_to` links from co-citation (links route search; they are never truth)
+- **gap mining** — clustered low-answerability queries become a per-namespace *missing knowledge* report
+- **failure mining** — the same failure signature in ≥ 3 agent runs becomes a gotcha proposal (still gated: agent evidence can't self-promote)
+- **decay** — expired clocks re-verify or go stale; untouched stale memory goes dormant
 
-### Cold start (spec §20)
+## Benchmarks
 
-`POST /v1/admin/bootstrap {"repo":"x","namespace_id":"/acme/repos/x"}` runs
-over the git connector's clone: ingests docs/build/CI files, seeds procedure
-cards from Makefile targets, branch-verifies them immediately (P3 promotes
-code-backed seeds with zero human input), reports gaps, and triggers C2
-profile generation. `memctl bootstrap` is the client-side equivalent for a
-local checkout.
+`mem-bench` drives the public API only. Metrics are always reported per axis, never one collapsed number. Current in-repo sample fixtures (local deterministic models, single machine):
 
-### InstitutionalBench v1 (spec §17.3)
+| Suite | Result |
+|---|---|
+| InstitutionalBench v1 (8 task families incl. stale-doc traps, forbidden files, prior failures) | 24/24, all T4 targets met, abstention 6/6 |
+| LongMemEval v1 adapter (evidence recall + abstention) | sample fixture 3/3 |
+| Smoke suite | 5/5 retrieval, 1/1 abstention, ~350 evidence tok/pack, ~6 ms/query |
 
 ```bash
+TOK=$(go run ./cmd/memctl token --tenant bench --principal svc:mem-bench)
 go run ./cmd/mem-bench institutional --token $TOK --services 3 --seed 7 -v
+go run ./cmd/mem-bench longmemeval  --token $TOK --file longmemeval_s.json --limit 100
+go run ./cmd/mem-bench run          --token $TOK --cases testdata/bench/smoke.jsonl -v
 ```
 
-Deterministic generator (public, per spec — private hash-pinned splits layer
-on top) covering the §17.3 task families: onboarding · stale-doc traps (doc
-says X, CI says Y — credit requires the current truth) · migration ordering ·
-ownership · prior-failure avoidance · forbidden-file (generated code) ·
-command recall · abstention. Reported per family against the T4 targets
-(§17.5); the current in-repo sample passes all targets at 100%.
+The InstitutionalBench generator is deterministic and public (per spec); private hash-pinned splits layer on top for real campaigns. Sample numbers above measure **evidence recall** — whether memory surfaced the right, current, cited material — which is the memory system's job; answer-level EM/F1 with a pinned reader model is the beat-SOTA campaign's job (§17.5 targets: LME-V2 ≥ 75%, abstention ≥ 90%, InstitutionalBench T4).
 
-## Layout
+## API
 
-Matches spec §14.1: `cmd/{memd,memctl,mem-bench}`, `pkg/{memory,client,evalapi}`,
-`internal/{api,authz,ingest,chunk,embed,cards,facts→cards,verify,retrieve,rerank,
-gates,pack,workspace,actions,jobs,store,objstore,secscan,config,tokens}`,
-`connectors/localfile`, `migrations/`, `configs/`, `testdata/`.
+```text
+POST /v1/evidence                     ingest (idempotent; secret + injection scans)
+POST /v1/query                        boot | scoped | deep | workspace | audit | benchmark
+GET  /v1/profile?level=0|1            L0/L1, ETag'd and cache-stable
+GET  /v1/workspaces/{id}[/archive]    manifest / tar.zst
+POST /v1/cards                        propose (422 without citations)
+POST /v1/cards/{id}/review            approve | reject | invalidate
+POST /v1/verify                       run a verification now
+POST /v1/facts · /v1/actions          facts; memory-action instrumentation
+POST /v1/admin/bootstrap              cold start a repo
+GET  /v1/admin/health · /ui           dashboard JSON · curation UI
+```
+
+RFC 7807 errors; HMAC bearer tokens; per-principal rate limiting; 403 is never distinguishable from 404 (no existence oracle). Every derived object's ACL is the **intersection** of its sources' ACLs — memory can never widen access to its evidence.
+
+## Repository layout
+
+```text
+cmd/            memd (server+workers) · memctl (admin CLI) · mem-bench (harness)
+pkg/            memory (types) · client (Go client) · evalapi (benchmark iface)
+internal/       api · authz · ingest · chunk · codeindex · embed · extract ·
+                cards · verify · retrieve · rerank · gates · pack · workspace ·
+                consolidate · jobs · store/postgres · objstore · secscan
+connectors/     git · github · slack · localfile
+migrations/     goose SQL (full schema: evidence, chunks, cards, facts,
+                verifications, actions, workspaces, jobs, consolidation_runs)
+configs/        memd.yaml · versioned extraction prompts
+```
 
 ## Testing
 
 ```bash
-go test ./...                                    # unit (promotion, ACL property, secscan, RRF, gates, chunkers)
-MEMBA_TEST_PG_DSN=postgres://… go test ./internal/store/postgres   # integration (idempotency, tenant isolation, ACL-in-SQL, job queue)
+go test ./...                                        # unit: promotion-rule matrix, 10k-iteration
+                                                     # ACL property test, injection corpus, RRF,
+                                                     # gates, chunkers, go/ast symbols, rate limiter
+MEMBA_TEST_PG_DSN=postgres://… go test ./...         # + integration: tenant isolation, ACL-in-SQL,
+                                                     # ingest idempotency, extractor E2E (fake LLM),
+                                                     # full consolidation run w/ idempotence check
 ```
 
-## Status vs. the v3 roadmap (spec §21)
+Security invariants are tested as invariants: zero cross-tenant hits, zero ACL leaks, injection corpus 100% quarantined, secrets span-redacted (`⟦REDACTED:aws_key⟧`) before anything reaches an embedding or a pack.
 
-| Phase | State |
+## Configuration
+
+Everything lives in `configs/memd.yaml` — budgets, TTLs, promotion thresholds, RRF constants, scan rules. Every query logs `config_hash = sha256(effective config)` so results are reproducible. Dev defaults run with **zero external services** (deterministic hash embedder + lexical reranker); production plugs in `voyage-code-3`, a cross-encoder, and an Anthropic extractor model behind interfaces — set `ANTHROPIC_API_KEY` and the citation-gated extractor turns on by itself.
+
+## Status
+
+Built to the [v3 specification](memba_v3_spec.md), in its phase order. **P0–P5 complete**; P6 (beat-SOTA campaign) started.
+
+| Phase | |
 |---|---|
-| P0 contracts & skeleton | ✅ /v1 API, migrations, authz, raw evidence + idempotency, FTS retrieval, local-file connector, mem-bench skeleton, ACL property + tenant-isolation tests |
-| P1 hybrid retrieval & workspace | ✅ chunkers, embeddings + HNSW (halfvec, iterative scans), trigram, RRF fusion, reranker cascade, pack budgets, workspace writer + GC, LongMemEval(v1) adapter |
-| P2 code awareness & verification | ✅ §9.1 branch checks (file/quote/symbol/commit) + JIT cache + G3 gate; code index (`go/ast` for Go per §9.3, regex fallback elsewhere pending tree-sitter); git/github connectors; `audit` mode |
-| P3 cards/proposals/promotion | ✅ full lifecycle: P1–P5 / B1–B5, dedup-at-propose, decay + dormancy sweeps, review API |
-| P4 temporal facts & conflicts | ✅ bitemporal facts, `as_of` filtering, supersession, G2/G4 + §8.7 winner rules |
-| P5 consolidation & connectors | ✅ sleep-time jobs C1–C7 + stats; LLM extractor with citation gate + caps; secscan + quarantine; git/github(PR+CI)/slack/localfile connectors; health dashboard + review UI; server-side bootstrap |
-| P6 beat-SOTA campaign | started: LongMemEval(v1) adapter + InstitutionalBench v1 (generator + runner, T4-checked). Pending: LME-V2/MemoryAgentBench/BEAM adapters, pinned-reader answer scoring, ablation grid (H1–H4), scaffoldopt |
-| P7 memory-specialist model | not started (gated on P6 evidence, per spec) |
+| P0 contracts & skeleton | ✅ |
+| P1 hybrid retrieval & workspace | ✅ RRF + rerank cascade, budgeted packs, L4 writer, LongMemEval adapter |
+| P2 code awareness & verification | ✅ branch checks (file/quote/symbol/commit), go/ast code index, JIT cache, audit mode |
+| P3 cards, proposals, promotion | ✅ P1–P5/B1–B5, dedup-at-propose, decay + dormancy, review API |
+| P4 temporal facts & conflicts | ✅ bitemporal facts, `as_of` queries, deterministic conflict rules |
+| P5 consolidation, security, connectors | ✅ C1–C7 jobs, LLM extractor, poisoning defenses, connectors, dashboard, bootstrap |
+| P6 beat-SOTA campaign | ▶ InstitutionalBench v1 + LME adapter shipped; LME-V2/MemoryAgentBench/BEAM adapters, pinned-reader scoring, ablations pending |
+| P7 memory-specialist model | gated on P6 evidence, per spec |
 
-### Deliberate deviations from the spec (all behind interfaces)
+**Known deviations** (all behind interfaces, documented in-code): jobs use a Postgres `FOR UPDATE SKIP LOCKED` queue with river-compatible semantics; non-Go languages use regex symbol extraction until tree-sitter grammars are vendored; dev model defaults are local and deterministic.
 
-- **Jobs**: a Postgres `FOR UPDATE SKIP LOCKED` queue with the spec's job
-  kinds instead of `riverqueue/river`; same coordination semantics, swap is an
-  adapter behind `internal/jobs`.
-- **Models**: dev/CI defaults are local and deterministic — a feature-hashing
-  embedder and a lexical-overlap reranker — so the entire pipeline runs with
-  zero external services. Production models (voyage-code-3, cross-encoder,
-  extractor LLM) plug in behind `Embedder`/`Reranker` (§14.2); the Voyage
-  adapter is included (`VOYAGE_API_KEY`).
-- **Object store**: fs backend by default; `backend: s3` enables the
-  aws-sdk-go-v2 adapter (MinIO path-style; creds via
-  MEMD_S3_ACCESS_KEY/MEMD_S3_SECRET_KEY or the AWS chain).
-- **Code index**: Go via stdlib `go/ast` (the spec's prescribed path);
-  other languages use the regex extractor until tree-sitter grammars are
-  vendored — an accuracy upgrade behind the same `codeindex` interface.
-- **Chunking**: block-boundary code chunking (line-capped, file-header
-  prefixed); AST-aware boundaries ride the same tree-sitter upgrade.
-- **Symbol citations**: §9.1 step B triggers on `git://repo/path#Symbol`
-  URI fragments (SourceRef has no dedicated symbol field).
-- **Ingest**: chunk+embed run inline (read-your-writes for benchmarks);
-  `extract_cards` runs in the background worker via the Anthropic SDK.
-- **LongMemEval scoring**: the adapter reports evidence recall + abstention
-  (memory-side metrics); answer-level EM/F1 with a pinned reader model is
-  the P6 campaign's job.
+---
+
+*The spec's design bet, in one line: agents don't need a bigger context window — they need an org-shaped memory that can prove what it says, admit what it doesn't know, and expire what stopped being true.*
