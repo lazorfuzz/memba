@@ -117,6 +117,62 @@ the card's `verify_by` clock and auto-promote proposals via rule P3; failing
 checks move cards to `stale`, and deep queries serve them **flagged, never
 silently dropped**.
 
+### Connectors (spec §14.4)
+
+All connectors normalize into `POST /v1/evidence` and are stateless beyond a
+cursor; re-runs are cheap thanks to ingest idempotency.
+
+```bash
+# git — maintains the clone under verify.repo_root (keeps branch
+# verification + the code index live) and ingests diff-driven increments
+go run ./connectors/git --repo-url https://github.com/acme/x.git --repo x \
+  --namespace /acme/repos/x --token $TOK --branch main --interval 60s
+
+# github — merged PRs (github_pr) + failed workflow runs (ci); GITHUB_TOKEN optional for public repos
+go run ./connectors/github --owner acme --repo x --namespace /acme/repos/x --token $TOK --interval 5m
+
+# slack — channel history batches (authority 7; injection/secret scans server-side); needs SLACK_TOKEN
+go run ./connectors/slack --channels C0PAY --namespace /acme/team/payments --token $TOK --interval 5m
+
+# localfile — directory trees (docs)
+go run ./connectors/localfile --dir ./docs --namespace /acme/repos/x --token $TOK
+```
+
+### Curation surface (spec §16)
+
+`GET /ui` serves the memory-health dashboard + review queue (paste an
+operator token). Data endpoints: `GET /v1/admin/health` (card freshness,
+verify-overdue, proposal queue depth, median time-to-promotion,
+low-answerability count) and `GET /v1/cards?status=proposed`.
+
+### Audit mode (spec §8.1, D7)
+
+`POST /v1/query` with `{"mode":"audit","query":"card:<id>"}` returns the full
+provenance chain: card/fact, citations with cited-evidence summaries,
+verification history, and review decisions.
+
+### Cold start (spec §20)
+
+`POST /v1/admin/bootstrap {"repo":"x","namespace_id":"/acme/repos/x"}` runs
+over the git connector's clone: ingests docs/build/CI files, seeds procedure
+cards from Makefile targets, branch-verifies them immediately (P3 promotes
+code-backed seeds with zero human input), reports gaps, and triggers C2
+profile generation. `memctl bootstrap` is the client-side equivalent for a
+local checkout.
+
+### InstitutionalBench v1 (spec §17.3)
+
+```bash
+go run ./cmd/mem-bench institutional --token $TOK --services 3 --seed 7 -v
+```
+
+Deterministic generator (public, per spec — private hash-pinned splits layer
+on top) covering the §17.3 task families: onboarding · stale-doc traps (doc
+says X, CI says Y — credit requires the current truth) · migration ordering ·
+ownership · prior-failure avoidance · forbidden-file (generated code) ·
+command recall · abstention. Reported per family against the T4 targets
+(§17.5); the current in-repo sample passes all targets at 100%.
+
 ## Layout
 
 Matches spec §14.1: `cmd/{memd,memctl,mem-bench}`, `pkg/{memory,client,evalapi}`,
@@ -137,11 +193,12 @@ MEMBA_TEST_PG_DSN=postgres://… go test ./internal/store/postgres   # integrati
 |---|---|
 | P0 contracts & skeleton | ✅ /v1 API, migrations, authz, raw evidence + idempotency, FTS retrieval, local-file connector, mem-bench skeleton, ACL property + tenant-isolation tests |
 | P1 hybrid retrieval & workspace | ✅ chunkers, embeddings + HNSW (halfvec, iterative scans), trigram, RRF fusion, reranker cascade, pack budgets, workspace writer + GC, LongMemEval(v1) adapter |
-| P2 code awareness & verification | ✅ §9.1 branch checks (file/quote/commit) + JIT cache + G3 gate over local clones. Pending: tree-sitter code index, git/github connectors, `audit` mode |
+| P2 code awareness & verification | ✅ §9.1 branch checks (file/quote/symbol/commit) + JIT cache + G3 gate; code index (`go/ast` for Go per §9.3, regex fallback elsewhere pending tree-sitter); git/github connectors; `audit` mode |
 | P3 cards/proposals/promotion | ✅ full lifecycle: P1–P5 / B1–B5, dedup-at-propose, decay + dormancy sweeps, review API |
 | P4 temporal facts & conflicts | ✅ bitemporal facts, `as_of` filtering, supersession, G2/G4 + §8.7 winner rules |
-| P5 consolidation & connectors | ✅ sleep-time jobs C1–C7 + `consolidation_runs` stats; LLM extractor (§10.4) with citation gate + caps; secscan + quarantine. Pending: ci/docs/slack connectors, health dashboard UI |
-| P6 beat-SOTA campaign | not started (needs P5) |
+| P5 consolidation & connectors | ✅ sleep-time jobs C1–C7 + stats; LLM extractor with citation gate + caps; secscan + quarantine; git/github(PR+CI)/slack/localfile connectors; health dashboard + review UI; server-side bootstrap |
+| P6 beat-SOTA campaign | started: LongMemEval(v1) adapter + InstitutionalBench v1 (generator + runner, T4-checked). Pending: LME-V2/MemoryAgentBench/BEAM adapters, pinned-reader answer scoring, ablation grid (H1–H4), scaffoldopt |
+| P7 memory-specialist model | not started (gated on P6 evidence, per spec) |
 
 ### Deliberate deviations from the spec (all behind interfaces)
 
@@ -153,10 +210,16 @@ MEMBA_TEST_PG_DSN=postgres://… go test ./internal/store/postgres   # integrati
   zero external services. Production models (voyage-code-3, cross-encoder,
   extractor LLM) plug in behind `Embedder`/`Reranker` (§14.2); the Voyage
   adapter is included (`VOYAGE_API_KEY`).
-- **Object store**: fs backend by default; S3/MinIO is an adapter behind
-  `objstore.Store`.
+- **Object store**: fs backend by default; `backend: s3` enables the
+  aws-sdk-go-v2 adapter (MinIO path-style; creds via
+  MEMD_S3_ACCESS_KEY/MEMD_S3_SECRET_KEY or the AWS chain).
+- **Code index**: Go via stdlib `go/ast` (the spec's prescribed path);
+  other languages use the regex extractor until tree-sitter grammars are
+  vendored — an accuracy upgrade behind the same `codeindex` interface.
 - **Chunking**: block-boundary code chunking (line-capped, file-header
-  prefixed); AST/tree-sitter chunking lands with `internal/codeindex` (P2).
+  prefixed); AST-aware boundaries ride the same tree-sitter upgrade.
+- **Symbol citations**: §9.1 step B triggers on `git://repo/path#Symbol`
+  URI fragments (SourceRef has no dedicated symbol field).
 - **Ingest**: chunk+embed run inline (read-your-writes for benchmarks);
   `extract_cards` runs in the background worker via the Anthropic SDK.
 - **LongMemEval scoring**: the adapter reports evidence recall + abstention

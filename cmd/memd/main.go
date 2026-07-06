@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/lazorfuzz/memba/internal/api"
+	"github.com/lazorfuzz/memba/internal/codeindex"
 	"github.com/lazorfuzz/memba/internal/config"
 	"github.com/lazorfuzz/memba/internal/consolidate"
 	"github.com/lazorfuzz/memba/internal/embed"
@@ -90,7 +91,7 @@ func main() {
 	log.Info("memba", "config_hash", svc.Hash, "embedder", emb.ModelID())
 
 	if *role == "worker" || *role == "all" {
-		verifier := &verify.Verifier{Store: st, Embedder: emb, RepoRoot: cfg.Verify.RepoRoot}
+		verifier := &verify.Verifier{Store: st, Embedder: emb, RepoRoot: cfg.Verify.RepoRoot, CodeIndex: codeindex.New(cfg.Verify.RepoRoot)}
 
 		// LLM extractor (§10.4): enabled only when the configured provider has
 		// credentials; otherwise extract_cards jobs drain as recorded no-ops.

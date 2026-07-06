@@ -13,8 +13,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
+	"github.com/lazorfuzz/memba/internal/authz"
 	"github.com/lazorfuzz/memba/internal/cards"
+	"github.com/lazorfuzz/memba/internal/codeindex"
 	"github.com/lazorfuzz/memba/internal/config"
 	"github.com/lazorfuzz/memba/internal/consolidate"
 	"github.com/lazorfuzz/memba/internal/embed"
@@ -44,7 +47,7 @@ type Service struct {
 }
 
 func New(cfg config.Config, st store.Store, emb embed.Embedder, rr rerank.Reranker, ws *workspace.Writer) *Service {
-	v := &verify.Verifier{Store: st, Embedder: emb, RepoRoot: cfg.Verify.RepoRoot}
+	v := &verify.Verifier{Store: st, Embedder: emb, RepoRoot: cfg.Verify.RepoRoot, CodeIndex: codeindex.New(cfg.Verify.RepoRoot)}
 	return &Service{
 		Cfg:       cfg,
 		Store:     st,
@@ -97,6 +100,11 @@ func (s *Service) Query(ctx context.Context, p memory.Principal, req memory.Quer
 		}
 		s.recordAction(ctx, p, req, queryID, memory.ActionSearch, started, &ep)
 		return ep, nil
+	}
+
+	// Audit mode: provenance + verification chain for one item (§8.1, D7).
+	if mode == memory.ModeAudit {
+		return s.audit(ctx, p, queryID, strings.TrimSpace(req.Query))
 	}
 
 	scope, err := s.Store.ResolveScope(ctx, p.TenantID, req.NamespaceHints)
@@ -163,6 +171,67 @@ func (s *Service) Query(ctx context.Context, p memory.Principal, req memory.Quer
 	} else {
 		s.recordAction(ctx, p, req, queryID, memory.ActionSearch, started, &ep)
 	}
+	return ep, nil
+}
+
+// audit builds the mode=audit report. The query field carries the ref
+// ("card:<id>" | "fact:<id>"). ACL applies: no existence oracle.
+func (s *Service) audit(ctx context.Context, p memory.Principal, queryID, ref string) (memory.EvidencePack, error) {
+	ep := memory.EvidencePack{
+		QueryID: queryID, Mode: memory.ModeAudit, ConfigHash: s.Hash, Answerability: "high",
+		Cards: []memory.PackCard{}, Facts: []memory.PackFact{}, Superseded: []memory.PackFact{},
+		Conflicts: []memory.ConflictGroup{}, StaleFlagged: []memory.StaleFlagged{},
+		RawSpans: []memory.RawSpan{}, MissingEvidence: []string{},
+	}
+	targetType, targetID, err := parseTarget(ref)
+	if err != nil {
+		return ep, fmt.Errorf(`audit mode expects query = "card:<id>" or "fact:<id>"`)
+	}
+	report := &memory.AuditReport{Ref: ref, Verifications: []memory.VerificationResult{}, Reviews: []memory.ReviewRecord{}, CitedEvidence: []memory.EvidenceSummary{}}
+	var sources []memory.SourceRef
+	switch targetType {
+	case "card":
+		card, err := s.Store.GetCard(ctx, p.TenantID, targetID)
+		if err != nil || !authz.Allowed(p, card.ACL) {
+			return ep, pgx.ErrNoRows
+		}
+		report.Card = &card
+		sources = card.Sources
+		if reviews, err := s.Store.ListReviews(ctx, targetID); err == nil {
+			for _, r := range reviews {
+				report.Reviews = append(report.Reviews, memory.ReviewRecord{
+					Reviewer: r.Reviewer, Decision: r.Decision, Reason: r.Reason, CreatedAt: r.CreatedAt,
+				})
+			}
+		}
+	case "fact":
+		fact, err := s.Store.FactByID(ctx, p.TenantID, targetID)
+		if err != nil || !authz.Allowed(p, fact.ACL) {
+			return ep, pgx.ErrNoRows
+		}
+		report.Fact = &fact
+		sources = fact.Sources
+	}
+	if history, err := s.Store.VerificationHistory(ctx, targetID, 20); err == nil {
+		report.Verifications = history
+	}
+	seen := map[string]struct{}{}
+	for _, src := range sources {
+		if src.RawID == "" {
+			continue
+		}
+		if _, dup := seen[src.RawID]; dup {
+			continue
+		}
+		seen[src.RawID] = struct{}{}
+		if ev, err := s.Store.GetEvidence(ctx, p.TenantID, src.RawID); err == nil {
+			report.CitedEvidence = append(report.CitedEvidence, memory.EvidenceSummary{
+				RawID: ev.ID, SourceType: ev.SourceType, SourceURI: ev.SourceURI,
+				IngestedAt: ev.IngestedAt, Quarantined: ev.Quarantined,
+			})
+		}
+	}
+	ep.Audit = report
 	return ep, nil
 }
 

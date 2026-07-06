@@ -30,8 +30,10 @@ func New(cfg config.ObjStore) (Store, error) {
 			dir = "./data/objstore"
 		}
 		return &FS{Root: dir}, nil
+	case "s3":
+		return NewS3(context.Background(), cfg)
 	default:
-		return nil, fmt.Errorf("objstore backend %q not built in this binary (fs only; add the s3 adapter behind objstore.Store)", cfg.Backend)
+		return nil, fmt.Errorf("unknown objstore backend %q (fs|s3)", cfg.Backend)
 	}
 }
 

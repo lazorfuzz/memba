@@ -450,6 +450,35 @@ type RawSpan struct {
 	Excerpt   string     `json:"excerpt"`
 }
 
+// ReviewRecord is one review decision in an audit report.
+type ReviewRecord struct {
+	Reviewer  string    `json:"reviewer"`
+	Decision  string    `json:"decision"`
+	Reason    string    `json:"reason,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// EvidenceSummary describes cited raw evidence in an audit report without
+// reproducing its body.
+type EvidenceSummary struct {
+	RawID       string    `json:"raw_id"`
+	SourceType  string    `json:"source_type"`
+	SourceURI   string    `json:"source_uri"`
+	IngestedAt  time.Time `json:"ingested_at"`
+	Quarantined bool      `json:"quarantined"`
+}
+
+// AuditReport is the mode=audit payload (spec §8.1): full provenance +
+// verification chain for one memory (§15.4 D7 forensics).
+type AuditReport struct {
+	Ref           string               `json:"ref"`
+	Card          *Card                `json:"card,omitempty"`
+	Fact          *Fact                `json:"fact,omitempty"`
+	Verifications []VerificationResult `json:"verifications"`
+	Reviews       []ReviewRecord       `json:"reviews"`
+	CitedEvidence []EvidenceSummary    `json:"cited_evidence"`
+}
+
 // EvidencePack is the structured response of POST /v1/query (spec §8.8).
 type EvidencePack struct {
 	QueryID         string          `json:"query_id"`
@@ -469,6 +498,7 @@ type EvidencePack struct {
 	WorkspaceURI    string          `json:"workspace_uri,omitempty"`
 	WorkspaceID     string          `json:"workspace_id,omitempty"`
 	Degraded        []string        `json:"degraded,omitempty"` // retrievers that failed (§14.5)
+	Audit           *AuditReport    `json:"audit,omitempty"`    // mode=audit only
 }
 
 // ---------------------------------------------------------------------------

@@ -50,10 +50,15 @@ func main() {
 		cmdLongMemEval(os.Args[2:])
 		return
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "institutional" {
+		cmdInstitutional(os.Args[2:])
+		return
+	}
 	if len(os.Args) < 2 || os.Args[1] != "run" {
 		fmt.Fprintln(os.Stderr, `usage:
-  mem-bench run         --base URL --token TOK --cases FILE [--mode deep] [-v]
-  mem-bench longmemeval --base URL --token TOK --file longmemeval_s.json [--limit N] [--mode deep] [-v]`)
+  mem-bench run           --base URL --token TOK --cases FILE [--mode deep] [-v]
+  mem-bench longmemeval   --base URL --token TOK --file longmemeval_s.json [--limit N] [--mode deep] [-v]
+  mem-bench institutional --base URL --token TOK [--services 3] [--seed 7] [--write-corpus FILE] [-v]`)
 		os.Exit(2)
 	}
 	runCmd.Parse(os.Args[2:])

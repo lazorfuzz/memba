@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lazorfuzz/memba/internal/codeindex"
 	"github.com/lazorfuzz/memba/internal/embed"
 	"github.com/lazorfuzz/memba/internal/store"
 	"github.com/lazorfuzz/memba/pkg/memory"
@@ -27,6 +28,9 @@ type Verifier struct {
 	Store    store.Store
 	Embedder embed.Embedder
 	RepoRoot string
+	// CodeIndex powers §9.1 step B (symbol exists?). Optional; without it
+	// symbol fragments are skipped.
+	CodeIndex *codeindex.Index
 }
 
 func (v *Verifier) repoDir(repo string) string {
@@ -62,18 +66,24 @@ func (v *Verifier) resolveHead(ctx context.Context, repo, branch string) (string
 	return sha, nil
 }
 
-// gitPathFromURI extracts the in-repo path from "git://<repo>/<path>".
-func gitPathFromURI(uri, repo string) (string, bool) {
+// gitPathFromURI extracts the in-repo path and optional fragment from
+// "git://<repo>/<path>[#fragment]". A fragment of the form "L10-40" is a
+// line range; anything identifier-shaped names a symbol (§9.1 step B).
+func gitPathFromURI(uri, repo string) (path, fragment string, ok bool) {
 	prefix := "git://" + repo + "/"
 	if !strings.HasPrefix(uri, prefix) {
-		return "", false
+		return "", "", false
 	}
 	p := strings.TrimPrefix(uri, prefix)
 	if i := strings.Index(p, "#"); i >= 0 {
+		fragment = p[i+1:]
 		p = p[:i]
 	}
-	return p, true
+	return p, fragment, true
 }
+
+var lineFragRe = regexp.MustCompile(`^L\d+(-\d+)?$`)
+var symbolFragRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.]*$`)
 
 // VerifyAgainstBranch implements the §9.1 algorithm for one card/fact.
 func (v *Verifier) VerifyAgainstBranch(ctx context.Context, target memory.Card, sources []memory.SourceRef, repo, branch string) (memory.VerificationResult, error) {
@@ -93,7 +103,7 @@ func (v *Verifier) VerifyAgainstBranch(ctx context.Context, target memory.Card, 
 	anyFail, allPass := false, true
 	checked := 0
 	for _, ref := range sources {
-		path, ok := gitPathFromURI(ref.SourceURI, repo)
+		path, fragment, ok := gitPathFromURI(ref.SourceURI, repo)
 		if !ok {
 			if ref.Path != "" && strings.HasPrefix(ref.SourceURI, "git://") {
 				continue // different repo
@@ -117,6 +127,20 @@ func (v *Verifier) VerifyAgainstBranch(ctx context.Context, target memory.Card, 
 		res.PerRef = append(res.PerRef, memory.RefOutcome{
 			SourceURI: ref.SourceURI, Check: "file_exists", Result: memory.VerifyPassed,
 		})
+
+		// B. symbol exists? (§9.1 B, via the §9.3 code index) — the citation
+		// names a symbol with a "#Symbol" URI fragment.
+		if v.CodeIndex != nil && fragment != "" && !lineFragRe.MatchString(fragment) && symbolFragRe.MatchString(fragment) {
+			outcome := v.symbolCheck(ctx, repo, head, path, fragment, ref.SourceURI)
+			res.PerRef = append(res.PerRef, outcome)
+			switch outcome.Result {
+			case memory.VerifyFailed:
+				anyFail, allPass = true, false
+				continue
+			case memory.VerifyInconclusive:
+				allPass = false
+			}
+		}
 
 		// C. quote still holds?
 		if ref.Quote != "" {
@@ -168,6 +192,45 @@ func (v *Verifier) VerifyAgainstBranch(ctx context.Context, target memory.Card, 
 		res.Result = memory.VerifyInconclusive
 	}
 	return res, nil
+}
+
+// symbolCheck: defined in the cited file → PASS; defined elsewhere in the
+// repo → INCONCLUSIVE(moved?); defined nowhere → FAIL(symbol_missing).
+func (v *Verifier) symbolCheck(ctx context.Context, repo, head, path, symbol, sourceURI string) memory.RefOutcome {
+	out := memory.RefOutcome{SourceURI: sourceURI, Check: "symbol_exists"}
+	table, err := v.CodeIndex.At(ctx, repo, head)
+	if err != nil {
+		out.Result = memory.VerifyInconclusive
+		out.Detail = "code index unavailable: " + err.Error()
+		return out
+	}
+	files := table.DefinedIn(symbol)
+	if len(files) == 0 {
+		// Qualified method names (Type.Method) also index the bare name.
+		if i := strings.LastIndexByte(symbol, '.'); i > 0 {
+			files = table.DefinedIn(symbol[i+1:])
+		}
+	}
+	switch {
+	case len(files) == 0:
+		out.Result = memory.VerifyFailed
+		out.Detail = "symbol_missing: " + symbol + " not defined at " + shortSHA(head)
+	case containsPath(files, path):
+		out.Result = memory.VerifyPassed
+	default:
+		out.Result = memory.VerifyInconclusive
+		out.Detail = "moved?: " + symbol + " now defined in " + files[0]
+	}
+	return out
+}
+
+func containsPath(files []string, path string) bool {
+	for _, f := range files {
+		if f == path {
+			return true
+		}
+	}
+	return false
 }
 
 var shaRe = regexp.MustCompile(`^[0-9a-f]{7,40}$`)

@@ -34,6 +34,7 @@ type Metrics struct {
 	ACLDenials   atomic.Int64
 	Quarantines  atomic.Int64
 	StaleServed  atomic.Int64
+	RateLimited  atomic.Int64
 }
 
 func (m *Metrics) render(w io.Writer) {
@@ -44,6 +45,7 @@ func (m *Metrics) render(w io.Writer) {
 	fmt.Fprintf(w, "memba_acl_denials_total %d\n", m.ACLDenials.Load())
 	fmt.Fprintf(w, "memba_injection_quarantine_total %d\n", m.Quarantines.Load())
 	fmt.Fprintf(w, "memba_stale_served_total %d\n", m.StaleServed.Load())
+	fmt.Fprintf(w, "memba_rate_limited_total %d\n", m.RateLimited.Load())
 }
 
 // Server hosts the /v1 routes.
@@ -52,6 +54,7 @@ type Server struct {
 	Secret  []byte
 	Metrics Metrics
 	MaxBody int64
+	limiter *rateLimiter
 }
 
 func NewServer(svc *Service) (*Server, error) {
@@ -64,6 +67,7 @@ func NewServer(svc *Service) (*Server, error) {
 		Svc:     svc,
 		Secret:  []byte(secret),
 		MaxBody: int64(svc.Cfg.Server.MaxBodyMB) << 20,
+		limiter: newRateLimiter(svc.Cfg.Server.RateLimitPerMin),
 	}, nil
 }
 
@@ -81,8 +85,14 @@ func (s *Server) Router() http.Handler {
 		s.Metrics.render(w)
 	})
 
+	// The curation UI is a static page; its data calls carry bearer tokens.
+	r.Get("/ui", s.handleUI)
+
 	r.Group(func(r chi.Router) {
 		r.Use(s.authMiddleware)
+		r.Use(s.rateLimitMiddleware)
+		r.Get("/v1/admin/health", s.handleHealth)
+		r.Post("/v1/admin/bootstrap", s.handleBootstrap)
 		r.Post("/v1/evidence", s.handleInsert)
 		r.Post("/v1/query", s.handleQuery)
 		r.Get("/v1/profile", s.handleProfile)
@@ -390,6 +400,43 @@ func (s *Server) handleUpsertNamespace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ns)
+}
+
+// handleHealth serves the §16 memory-health dashboard data for the caller's
+// tenant.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	p := principalFrom(r)
+	h, err := s.Svc.Store.Health(r.Context(), p.TenantID)
+	if err != nil {
+		problem(w, http.StatusInternalServerError, "health failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tenant":  p.TenantID,
+		"health":  h,
+		"process": map[string]any{
+			"queries":       s.Metrics.Queries.Load(),
+			"inserts":       s.Metrics.Inserts.Load(),
+			"stale_served":  s.Metrics.StaleServed.Load(),
+			"acl_denials":   s.Metrics.ACLDenials.Load(),
+			"quarantines":   s.Metrics.Quarantines.Load(),
+			"rate_limited":  s.Metrics.RateLimited.Load(),
+		},
+	})
+}
+
+func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
+	var req BootstrapRequest
+	if !decode(w, r, &req) {
+		return
+	}
+	p := principalFrom(r)
+	report, err := s.Svc.Bootstrap(r.Context(), p, req)
+	if err != nil {
+		problem(w, http.StatusUnprocessableEntity, "bootstrap failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 // --- helpers -----------------------------------------------------------------

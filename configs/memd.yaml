@@ -1,8 +1,9 @@
 # configs/memd.yaml — shipping defaults (spec §4.4).
 # Every query logs config_hash = sha256(effective retrieval+model config) (I5).
 
-server:   { http_addr: ":8080", max_body_mb: 32 }
+server:   { http_addr: ":8080", max_body_mb: 32, rate_limit_per_min: 600 }
 postgres: { dsn_env: MEMD_PG_DSN, max_conns: 32 }
+# backend: fs (dev) | s3 (MinIO/AWS; creds via MEMD_S3_ACCESS_KEY/MEMD_S3_SECRET_KEY or AWS chain)
 objstore: { backend: fs, dir: ./data/objstore, endpoint_env: MEMD_S3_ENDPOINT, bucket: memba }
 
 models:

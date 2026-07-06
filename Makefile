@@ -8,6 +8,9 @@ build:
 	$(GO) build -o bin/memctl ./cmd/memctl
 	$(GO) build -o bin/mem-bench ./cmd/mem-bench
 	$(GO) build -o bin/localfile ./connectors/localfile
+	$(GO) build -o bin/git-connector ./connectors/git
+	$(GO) build -o bin/github-connector ./connectors/github
+	$(GO) build -o bin/slack-connector ./connectors/slack
 
 test:
 	$(GO) test ./...

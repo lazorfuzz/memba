@@ -16,6 +16,9 @@ import (
 type Server struct {
 	HTTPAddr  string `yaml:"http_addr" json:"http_addr"`
 	MaxBodyMB int    `yaml:"max_body_mb" json:"max_body_mb"`
+	// RateLimitPerMin is the per-principal request budget (429 above it,
+	// spec §13); 0 disables limiting.
+	RateLimitPerMin int `yaml:"rate_limit_per_min" json:"rate_limit_per_min"`
 }
 
 type Postgres struct {
@@ -113,7 +116,7 @@ type Config struct {
 // Default returns the shipping defaults from spec §4.4.
 func Default() Config {
 	return Config{
-		Server:   Server{HTTPAddr: ":8080", MaxBodyMB: 32},
+		Server:   Server{HTTPAddr: ":8080", MaxBodyMB: 32, RateLimitPerMin: 600},
 		Postgres: Postgres{DSNEnv: "MEMD_PG_DSN", MaxConns: 32},
 		ObjStore: ObjStore{Backend: "fs", Dir: "./data/objstore", EndpointEnv: "MEMD_S3_ENDPOINT", Bucket: "memba"},
 		Models: Models{

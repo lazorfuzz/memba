@@ -208,9 +208,59 @@ func (a *Assembler) Assemble(ctx context.Context, in Input) (memory.EvidencePack
 		p.RawSpans = append(p.RawSpans, span)
 	}
 
+	coverage, uncovered := termCoverage(in.Analyzed.Terms, packHaystack(p))
 	p.MissingEvidence = missingEvidence(in, p)
-	p.Answerability = answerability(in, p)
+	// Coverage gap → explicit missing-evidence note (§8.2 step 9): the pack
+	// matched *something*, but not the facets the question is about.
+	if len(in.Analyzed.Terms) >= 2 && coverage < 0.6 && len(uncovered) >= 2 {
+		p.MissingEvidence = append(p.MissingEvidence,
+			"institutional memory does not mention: "+strings.Join(uncovered, ", "))
+	}
+	p.Answerability = answerability(in, p, coverage)
 	return p, nil
+}
+
+// packHaystack concatenates the served content for coverage checks.
+func packHaystack(p memory.EvidencePack) string {
+	b := &strings.Builder{}
+	b.WriteString(p.ProfileExcerpt)
+	for _, c := range p.Cards {
+		b.WriteString(" " + c.Title + " " + c.Body)
+	}
+	for _, f := range p.Facts {
+		b.WriteString(" " + f.Subject + " " + f.Predicate + " " + f.Object)
+	}
+	for _, s := range p.RawSpans {
+		b.WriteString(" " + s.Path + " " + s.Excerpt)
+	}
+	return strings.ToLower(b.String())
+}
+
+// termCoverage measures what fraction of the query's content terms the pack
+// actually mentions (light stemming so "tests" matches "test").
+func termCoverage(terms []string, hay string) (float64, []string) {
+	if len(terms) == 0 {
+		return 1, nil
+	}
+	var uncovered []string
+	covered := 0
+	for _, t := range terms {
+		if strings.Contains(hay, stem(strings.ToLower(t))) {
+			covered++
+		} else {
+			uncovered = append(uncovered, t)
+		}
+	}
+	return float64(covered) / float64(len(terms)), uncovered
+}
+
+func stem(t string) string {
+	for _, suffix := range []string{"ing", "es", "ed", "s"} {
+		if strings.HasSuffix(t, suffix) && len(t)-len(suffix) >= 4 {
+			return t[:len(t)-len(suffix)]
+		}
+	}
+	return t
 }
 
 func key(c store.Candidate) string { return c.Kind + ":" + c.ID }
@@ -286,8 +336,9 @@ func missingEvidence(in Input, p memory.EvidencePack) []string {
 }
 
 // answerability computes high|partial|low from top rerank score, verified
-// item count, and unresolved conflicts (spec §8.6).
-func answerability(in Input, p memory.EvidencePack) string {
+// item count, unresolved conflicts, and query-term coverage (spec §8.6):
+// matching the entity name alone is not answering the question.
+func answerability(in Input, p memory.EvidencePack, coverage float64) string {
 	var top float64
 	if len(in.Gated.Kept) > 0 {
 		top = in.Gated.Kept[0].Score
@@ -313,7 +364,9 @@ func answerability(in Input, p memory.EvidencePack) string {
 	switch {
 	case itemCount == 0:
 		return "low"
-	case unresolved:
+	case len(in.Analyzed.Terms) >= 2 && coverage < 0.35 && verified == 0:
+		return "low"
+	case unresolved || coverage < 0.6:
 		return "partial"
 	case top >= 0.3 && (verified > 0 || itemCount >= 3):
 		return "high"

@@ -90,6 +90,29 @@ type GapQuery struct {
 	Count int
 }
 
+// Review is one recorded review decision (spec §6.8).
+type Review struct {
+	Reviewer   string    `json:"reviewer"`
+	Decision   string    `json:"decision"`
+	Reason     string    `json:"reason,omitempty"`
+	EditedBody string    `json:"edited_body,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// HealthStats feeds the memory health dashboard (spec §16).
+type HealthStats struct {
+	CardsByStatus      map[string]int `json:"cards_by_status"`
+	VerifyOverdue      int            `json:"verify_overdue"`
+	ProposalQueueDepth int            `json:"proposal_queue_depth"`
+	QuarantinedRaw     int            `json:"quarantined_raw"`
+	EvidenceTotal      int            `json:"evidence_total"`
+	ChunksTotal        int            `json:"chunks_total"`
+	FactsActive        int            `json:"facts_active"`
+	MedianTimeToPromoteSeconds float64 `json:"median_time_to_promotion_seconds"`
+	LowAnswerability7d int            `json:"low_answerability_7d"`
+	ConsolidationRuns7d int           `json:"consolidation_runs_7d"`
+}
+
 // CardFilter selects cards for listing.
 type CardFilter struct {
 	NamespaceID string
@@ -157,6 +180,11 @@ type Store interface {
 	InsertVerification(ctx context.Context, tenantID, namespaceID string, v memory.VerificationResult) (string, error)
 	CachedVerification(ctx context.Context, targetID, repo, headSHA string) (memory.VerificationResult, bool, error)
 	LatestVerification(ctx context.Context, targetID string) (memory.VerificationResult, bool, error)
+	VerificationHistory(ctx context.Context, targetID string, limit int) ([]memory.VerificationResult, error)
+	ListReviews(ctx context.Context, cardID string) ([]Review, error)
+
+	// Health dashboard (§16)
+	Health(ctx context.Context, tenantID string) (HealthStats, error)
 
 	// Actions
 	InsertAction(ctx context.Context, a memory.MemoryAction) error

@@ -6,6 +6,7 @@ package evalapi
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lazorfuzz/memba/pkg/client"
@@ -79,10 +80,15 @@ func (v *V1) Insert(ctx context.Context, item BenchmarkItem) (err error) {
 		NamespaceID: v.ActiveNamespace(item.NamespaceID),
 		SourceType:  item.SourceType,
 		SourceURI:   item.SourceURI,
-		Title:       item.Title,
-		Body:        item.Body,
-		EventTime:   item.EventTime,
-		Metadata:    meta,
+		// The run id doubles as source_version: identical corpora re-run
+		// under a new Reset() get fresh rows in the fresh namespace instead
+		// of deduping to a prior run's rows (idempotency key includes
+		// version; §13.2).
+		SourceVersion: strings.TrimPrefix(v.runSuffix, "/"),
+		Title:         item.Title,
+		Body:          item.Body,
+		EventTime:     item.EventTime,
+		Metadata:      meta,
 	})
 	return err
 }
